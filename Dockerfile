@@ -5,39 +5,36 @@ WORKDIR /app
 # Install pnpm
 RUN npm install -g pnpm
 
-# Copy package files first (better caching)
+# Copy package files
 COPY package.json pnpm-lock.yaml ./
 
-# Install dependencies
+# Install deps
 RUN pnpm install --frozen-lockfile
 
-# Copy app source
+# Copy source
 COPY . .
 
-# Build Vite app
+# Build project
 RUN pnpm build
 
 
 
 # ---- Production Stage ----
-FROM nginx:stable-alpine AS production
+FROM node:18-alpine AS production
+WORKDIR /app
 
-# Remove default nginx static files
-RUN rm -rf /usr/share/nginx/html/*
+# Install pnpm
+RUN npm install -g pnpm
 
-# Copy built files from previous stage
-COPY --from=build /app/dist /usr/share/nginx/html
+# Copy built app + needed files
+COPY package.json pnpm-lock.yaml ./
+COPY --from=build /app/dist ./dist
 
-# Simple SPA fallback to index.html
-RUN printf "server {\n\
-    listen 80;\n\
-    root /usr/share/nginx/html;\n\
-    index index.html;\n\
-    location / {\n\
-        try_files \$uri /index.html;\n\
-    }\n\
-}\n" > /etc/nginx/conf.d/default.conf
+# Install only prod dependencies (if any)
+RUN pnpm install --prod --frozen-lockfile
 
+# Expose vite preview port
 EXPOSE 3000
 
-CMD ["nginx", "-g", "daemon off;"]
+# Run Vite preview
+CMD ["pnpm", "preview", "--port", "3000", "--host"]
