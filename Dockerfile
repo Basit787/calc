@@ -8,10 +8,10 @@ RUN npm install -g pnpm
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
 
-# Install deps
+# Install all deps (including dev)
 RUN pnpm install --frozen-lockfile
 
-# Copy source
+# Copy source code
 COPY . .
 
 # Build project
@@ -26,14 +26,16 @@ WORKDIR /app
 # Install pnpm
 RUN npm install -g pnpm
 
-# Copy built app + needed files
-COPY package.json pnpm-lock.yaml ./
+# Copy built files
 COPY --from=build /app/dist ./dist
 
-# Install only prod dependencies (if any)
-RUN pnpm install --prod --frozen-lockfile
+# Copy package.json + lockfile
+COPY package.json pnpm-lock.yaml ./
 
-# Expose vite preview port
+# Copy *all* node_modules from build (so vite exists)
+COPY --from=build /app/node_modules ./node_modules
+
+# Expose preview port
 EXPOSE 3000
 
 # Run Vite preview
