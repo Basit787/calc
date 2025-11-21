@@ -1,0 +1,590 @@
+
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  Button,
+  Checkbox,
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormMessage,
+  Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  ScrollArea,
+  Separator,
+  useNotification,
+  VuiCard,
+  VuiDialog,
+  VuiInput,
+  VuiLoadingSpinner,
+  VuiSearch,
+  VuiToolTip,
+} from "vui";
+import { z } from "zod";
+
+import { useGetMetadataKeys, useGetMetadataValues } from "./api/hooks";
+import { Loader } from "../ui/loader";
+
+interface MetadataFormProps {
+  metadata: Record<string, any>;
+  setMetadata: (metadata: Record<string, any>) => void;
+}
+
+const createMetadataSchema = (metadata: Record<string, any>) =>
+  z
+    .object({
+      key: z
+        .string()
+        .trim()
+        .min(1, "Key cannot be empty.")
+        .regex(/^\S+$/, "Key must be a single word with no spaces.")
+        .refine((val) => val !== "source", 'Cannot use reserved key "source".'),
+      value: z
+        .any()
+        .refine(
+          (val) => val !== undefined && val !== "",
+          "Value cannot be empty."
+        ),
+    })
+    .refine((data) => !metadata.hasOwnProperty(data.key), {
+      message: "Metadata key already exists.",
+      path: ["key"],
+    })
+    .refine(
+      (data) => {
+        if (typeof data.value === "string") {
+          return data.key !== data.value;
+        }
+        return data.key !== JSON.stringify(data.value);
+      },
+      {
+        message: "Key and value cannot be the same.",
+        path: ["key"],
+      }
+    );
+
+type MetadataFormData = z.infer<ReturnType<typeof createMetadataSchema>>;
+
+const MetadataForm = ({ metadata, setMetadata }: MetadataFormProps) => {
+  const [filteredMetadata, setFilteredMetadata] =
+    useState<Record<string, any>>(metadata);
+  const [searchMetadata, setSearchMetadata] = useState<string>("");
+  const [selectAllMetadata, setSelectAllMetadata] = useState<boolean>(false);
+  const [metadataSelected, setMetadataSelected] = useState<
+    Record<string, boolean>
+  >({});
+  const [editingMetadataKey, setEditingMetadataKey] = useState<string | null>(
+    null
+  );
+  const [tempMetadataKey, setTempMetadataKey] = useState<string>("");
+  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState<boolean>(false);
+  const [openDialogKey, setOpenDialogKey] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string>("");
+
+  const { showErrorNotification } = useNotification();
+
+  const metaDataKeys = useGetMetadataKeys();
+  const {
+    data: metaDataValuesQuery,
+    isLoading,
+    isError,
+  } = useGetMetadataValues(editingMetadataKey ? tempMetadataKey : selectedKey);
+
+  const form = useForm<MetadataFormData>({
+    resolver: zodResolver(createMetadataSchema({})),
+    defaultValues: {
+      key: "",
+      value: "",
+    },
+    mode: "onChange",
+  });
+
+  useEffect(() => {
+    form.reset(form.getValues(), { keepDefaultValues: true });
+    form.clearErrors();
+  }, [metadata, form]);
+
+  useEffect(() => {
+    setSelectedKey(form.getValues("key"));
+  }, [form.watch("key")]);
+
+  const parseValue = (value: string): any => {
+    const trimmed = value.trim();
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed;
+    } catch {
+      if (!isNaN(Number(trimmed))) {
+        return Number(trimmed);
+      }
+      if (trimmed.toLowerCase() === "true") return true;
+      if (trimmed.toLowerCase() === "false") return false;
+      return trimmed;
+    }
+  };
+
+  useEffect(() => {
+    const selectedCopy: Record<string, boolean> = {};
+    Object.keys(metadata).forEach((key) => {
+      selectedCopy[key] = selectAllMetadata;
+    });
+    setMetadataSelected(selectedCopy);
+  }, [selectAllMetadata, metadata]);
+
+  useEffect(() => {
+    setSelectAllMetadata(false);
+    if (searchMetadata === "") {
+      setFilteredMetadata(metadata);
+      return;
+    }
+
+    const filtered: Record<string, any> = {};
+    Object.entries(metadata).forEach(([key, value]) => {
+      const stringValue =
+        typeof value === "string" ? value : JSON.stringify(value);
+      if (
+        key.toLowerCase().includes(searchMetadata.toLowerCase()) ||
+        stringValue.toLowerCase().includes(searchMetadata.toLowerCase())
+      ) {
+        filtered[key] = value;
+      }
+    });
+    setFilteredMetadata(filtered);
+  }, [searchMetadata, metadata]);
+
+  useEffect(() => {
+    setFilteredMetadata(metadata);
+    setSearchMetadata("");
+  }, [metadata]);
+
+  const deleteSelectedMetadata = () => {
+    const metadataCopy = { ...metadata };
+    Object.keys(metadataSelected)
+      .filter((key) => metadataSelected[key] === true && key !== "source")
+      .forEach((key) => delete metadataCopy[key]);
+    setMetadata(metadataCopy);
+    setMetadataSelected({});
+    setSelectAllMetadata(false);
+    setDeleteSelectedOpen(false);
+  };
+
+  const deleteSingleMetadata = (key: string) => {
+    const copy = { ...metadata };
+    delete copy[key];
+    setMetadata(copy);
+    setMetadataSelected((prev) => {
+      const selCopy = { ...prev };
+      delete selCopy[key];
+      return selCopy;
+    });
+    setOpenDialogKey(null);
+  };
+
+  const addMetadata = (data: MetadataFormData) => {
+    const result = createMetadataSchema(metadata).safeParse(data);
+    if (!result.success) {
+      result.error.issues.forEach((issue) => {
+        form.setError(issue.path[0] as "key" | "value", {
+          message: issue.message,
+        });
+      });
+      return;
+    }
+    const _key = data.key.toLowerCase();
+    const _value = parseValue(String(data.value));
+    setMetadata({ ...metadata, [_key]: _value });
+    form.reset();
+  };
+
+  const handleEditMetadataKey = (oldKey: string, newKey: string) => {
+    const trimmedNewKey = newKey.trim();
+    if (!trimmedNewKey || trimmedNewKey === oldKey) return;
+
+    const result = createMetadataSchema({
+      ...metadata,
+      [oldKey]: undefined,
+    }).safeParse({ key: trimmedNewKey, value: metadata[oldKey] });
+    if (!result.success) {
+      result.error.issues.forEach((issue) => {
+        form.setError(issue.path[0] as "key" | "value", {
+          message: issue.message,
+        });
+      });
+      return;
+    }
+
+    setMetadata((prev: Record<string, any>) => {
+      if (!(oldKey in prev)) return prev;
+      const newObj: Record<string, any> = {};
+      Object.keys(prev).forEach((key) => {
+        key === oldKey
+          ? (newObj[trimmedNewKey] = prev[key])
+          : (newObj[key] = prev[key]);
+      });
+      return newObj;
+    });
+
+    setMetadataSelected((prev) => {
+      if (!(oldKey in prev)) return prev;
+      const newObj: Record<string, boolean> = {};
+      Object.keys(prev).forEach((key) => {
+        key === oldKey
+          ? (newObj[trimmedNewKey] = prev[key])
+          : (newObj[key] = prev[key]);
+      });
+      return newObj;
+    });
+    setEditingMetadataKey(null);
+    setTempMetadataKey("");
+  };
+
+  const handleEditMetadataValue = (key: string, newValue: string) => {
+    const parsedValue = parseValue(newValue);
+    setMetadata((prev: Record<string, any>) => ({
+      ...prev,
+      [key]: parsedValue,
+    }));
+  };
+
+  if (isError)
+    showErrorNotification("Failed to get metadata values. Please try again.");
+
+  return (
+    <>
+      <VuiCard
+        title="Metadata"
+        content={
+          <div className="flex min-w-[40rem] flex-col gap-1">
+            <Form {...form}>
+              <form
+                onSubmit={form.handleSubmit(addMetadata)}
+                className="flex flex-row"
+              >
+                <div className="wdu flex gap-4">
+                  <Popover data-cy="metadata-key-popover">
+                    <VuiToolTip
+                      text="Select/Add new metadata key"
+                      data-cy="metadata-key-tooltip"
+                    >
+                      <PopoverTrigger asChild>
+                        <div className="w-[20rem]">
+                          <FormField
+                            control={form.control}
+                            name="key"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormControl>
+                                  <VuiInput
+                                    {...field}
+                                    hintText="add key"
+                                    className="w-full rounded-r-none"
+                                    data-cy="metadata-key-input"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+                      </PopoverTrigger>
+                    </VuiToolTip>
+                    {metaDataKeys?.data?.length && (
+                      <PopoverContent
+                        align="start"
+                        sideOffset={4}
+                        className="z-[100] max-h-60 w-[20rem] overflow-y-auto rounded-md border bg-white p-2 text-sm shadow-lg"
+                        data-cy="metadata-key-popover-content"
+                      >
+                        <ul
+                          className="space-y-1 text-gray-600"
+                          data-cy="metadata-key-list"
+                        >
+                          {metaDataKeys.data.map((key: string) => (
+                            <li
+                              key={key}
+                              onClick={() => {
+                                form.setValue("key", key, {
+                                  shouldValidate: true,
+                                });
+                                setSelectedKey(key);
+                                if (form.getValues("key").trim() !== key)
+                                  form.setValue("value", "");
+                              }}
+                              className="cursor-pointer rounded-sm px-2 py-1 hover:bg-slate-100"
+                              data-cy={`metadata-key-${key}`}
+                            >
+                              {key}
+                            </li>
+                          ))}
+                        </ul>
+                      </PopoverContent>
+                    )}
+                  </Popover>
+
+                  <Popover data-cy="metadata-value-popover">
+                    <VuiToolTip
+                      text="Select/Add new metadata value"
+                      data-cy="metadata-value-tooltip"
+                    >
+                      <PopoverTrigger asChild>
+                        <div className="w-[20rem]">
+                          <FormField
+                            control={form.control}
+                            name="value"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormControl>
+                                  <VuiInput
+                                    value={String(field.value ?? "")}
+                                    onChange={field.onChange}
+                                    hintText="add value (string, number, JSON, etc.)"
+                                    className="w-[20rem] rounded-r-none"
+                                    onEnter={form.handleSubmit(addMetadata)}
+                                    data-cy="metadata-value-input"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+                      </PopoverTrigger>
+                    </VuiToolTip>
+                    {metaDataValuesQuery?.length > 0 && (
+                      <PopoverContent
+                        align="start"
+                        sideOffset={4}
+                        className="z-[100] max-h-60 w-[20rem] overflow-y-auto rounded-md border bg-white p-2 text-sm shadow-lg"
+                        data-cy="metadata-value-popover-content"
+                      >
+                        {isLoading ? (
+                          <div className="flex items-center justify-center py-4">
+                            <Loader />
+                          </div>
+                        ) : isError ? (
+                          <div className="text-sm text-red-500">
+                            Failed to load values
+                          </div>
+                        ) : (
+                          <ul
+                            className="space-y-1 text-gray-600"
+                            data-cy="metadata-value-list"
+                          >
+                            {metaDataValuesQuery.map((value: string) => (
+                              <li
+                                key={value}
+                                onClick={() => form.setValue("value", value)}
+                                className="cursor-pointer rounded-sm px-2 py-1 hover:bg-slate-100"
+                                data-cy={`metadata-value-${value}`}
+                              >
+                                {value}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </PopoverContent>
+                    )}
+                  </Popover>
+
+                  <VuiToolTip
+                    text="Add metadata"
+                    data-cy="metadata-add-tooltip"
+                  >
+                    <div>
+                      <Button
+                        className="cursor-pointer rounded-l-none"
+                        type="submit"
+                        disabled={
+                          !form.formState.isValid ||
+                          !form.getValues("key").trim() ||
+                          !form.getValues("value").toString().trim()
+                        }
+                        data-cy="metadata-add-button"
+                      >
+                        <PlusIcon className="mr-2 h-4 w-4" />
+                      </Button>
+                    </div>
+                  </VuiToolTip>
+                </div>
+              </form>
+            </Form>
+            <div>
+              <VuiSearch
+                hideSearchButton
+                className="rounded-b-none rounded-t-md"
+                value={searchMetadata}
+                onChange={setSearchMetadata}
+                data-cy="metadata-search"
+              />
+              <div className="rounded-b-md rounded-t-none border border-t-0 p-2">
+                <div className="flex flex-row items-center justify-between px-3 pb-2">
+                  <div className="flex flex-row items-center gap-2">
+                    <Checkbox
+                      data-cy="metadata-check-all"
+                      checked={selectAllMetadata}
+                      onCheckedChange={(selected) =>
+                        setSelectAllMetadata(selected as boolean)
+                      }
+                    />
+                  </div>
+                  <VuiDialog
+                    open={deleteSelectedOpen}
+                    setOpen={setDeleteSelectedOpen}
+                    triggerButton={
+                      <Trash2Icon
+                        data-cy="metadata-delete-selected"
+                        size={16}
+                        aria-label="Delete selected metadata"
+                      />
+                    }
+                    title="Delete Metadata"
+                    description="Are you sure you want to delete the selected metadata entries. This action cannot be undone."
+                    confirmLabel="Delete"
+                    cancelLabel="Cancel"
+                    onConfirm={deleteSelectedMetadata}
+                    data-cy="delete-dialog-selected-metadata"
+                    aria-label="delete-dialog-selected-metadata"
+                  />
+                </div>
+                <Separator />
+                <ScrollArea className="h-60 p-1">
+                  <div className="grid grid-cols-2 gap-4">
+                    {Object.entries(filteredMetadata).map(([key, value]) => {
+                      const isSource = key === "source";
+                      return (
+                        <div
+                          key={key}
+                          className="flex flex-row items-center justify-between overflow-auto rounded-md border p-2"
+                        >
+                          <div className="flex flex-row items-center gap-2">
+                            <Checkbox
+                              data-cy={`metadata-entry-${key}`}
+                              checked={metadataSelected[key] || false}
+                              disabled={isSource}
+                              onCheckedChange={(selected) =>
+                                setMetadataSelected((prev) => ({
+                                  ...prev,
+                                  [key]: selected as boolean,
+                                }))
+                              }
+                            />
+                            <div className="flex flex-row gap-2">
+                              <Input
+                                value={
+                                  editingMetadataKey === key
+                                    ? tempMetadataKey
+                                    : key
+                                }
+                                onChange={(e) => {
+                                  if (isSource) return;
+                                  setEditingMetadataKey(key);
+                                  setTempMetadataKey(e.target.value);
+                                }}
+                                onBlur={() => {
+                                  if (
+                                    tempMetadataKey &&
+                                    tempMetadataKey !== key
+                                  ) {
+                                    handleEditMetadataKey(key, tempMetadataKey);
+                                  }
+                                  setEditingMetadataKey(null);
+                                  setTempMetadataKey("");
+                                }}
+                                onKeyDown={(e) => {
+                                  if (isSource) return;
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    if (
+                                      tempMetadataKey &&
+                                      tempMetadataKey !== key
+                                    ) {
+                                      handleEditMetadataKey(
+                                        key,
+                                        tempMetadataKey
+                                      );
+                                    }
+                                    setEditingMetadataKey(null);
+                                    setTempMetadataKey("");
+                                  }
+                                }}
+                                className="w-[10rem]"
+                                disabled={isSource}
+                                data-cy="metadata-key-input"
+                              />
+                              <Input
+                                value={
+                                  typeof value === "string"
+                                    ? value
+                                    : JSON.stringify(value)
+                                }
+                                onChange={(e) =>
+                                  !isSource &&
+                                  handleEditMetadataValue(key, e.target.value)
+                                }
+                                className="w-[10rem]"
+                                disabled={isSource}
+                                data-cy="metadata-value-input"
+                              />
+                            </div>
+                            <VuiDialog
+                              open={openDialogKey === key}
+                              setOpen={(val) =>
+                                setOpenDialogKey(val ? key : null)
+                              }
+                              triggerButton={
+                                <Trash2Icon
+                                  data-cy={`metadata-delete-${key}`}
+                                  size={16}
+                                  aria-label={`Delete ${key} metadata`}
+                                  className={
+                                    isSource
+                                      ? "cursor-not-allowed opacity-50"
+                                      : "cursor-pointer"
+                                  }
+                                />
+                              }
+                              title="Delete Metadata"
+                              description={`Are you sure you want to delete the metadata entry "${key}"? This action cannot be undone.`}
+                              confirmLabel="Delete"
+                              cancelLabel="Cancel"
+                              onConfirm={() => deleteSingleMetadata(key)}
+                              data-cy="delete-dialog-single-metadata"
+                              aria-label="delete-dialog-single-entity-metadata"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </div>
+            </div>
+          </div>
+        }
+        data-cy="metadata-card"
+      />
+      {isLoading && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/20"
+          data-cy="loading-spinner"
+        >
+          <div className="flex h-[50px] w-[50px] items-center justify-center rounded-lg bg-white shadow-lg">
+            <VuiLoadingSpinner
+              size={15}
+              color="black"
+              data-cy="loading-spinner-comp"
+            />
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+export default MetadataForm;
